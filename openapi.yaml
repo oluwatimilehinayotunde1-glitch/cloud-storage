@@ -1,0 +1,423 @@
+openapi: 3.0.0
+info:
+  title: SecureVault API
+  description: >
+    REST API for a secure cloud file storage system using hybrid cryptography
+    (AES-256-GCM for file contents, RSA-OAEP/SHA-256 to protect each file's AES key).
+    All responses use the envelope { success, message, data }.
+  version: 1.0.0
+servers:
+  - url: /api/v1
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    ApiResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        message: { type: string }
+        data: { type: object }
+  responses:
+    Unauthorized:
+      description: Missing or invalid access token
+    Forbidden:
+      description: Authenticated but not permitted to perform this action
+    NotFound:
+      description: Resource not found
+security:
+  - bearerAuth: []
+paths:
+  /auth/register:
+    post:
+      summary: Register a new user
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [firstName, lastName, email, username, password, confirmPassword]
+              properties:
+                firstName: { type: string }
+                lastName: { type: string }
+                email: { type: string, format: email }
+                username: { type: string }
+                password: { type: string, format: password }
+                confirmPassword: { type: string, format: password }
+      responses:
+        '201': { description: Registered, content: { application/json: { schema: { $ref: '#/components/schemas/ApiResponse' } } } }
+        '409': { description: Email or username already exists }
+
+  /auth/verify-email:
+    post:
+      summary: Verify a user's email using the token sent by email
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { token: { type: string } }
+      responses:
+        '200': { description: Verified }
+
+  /auth/login:
+    post:
+      summary: Log in with email/username and password (plus TOTP code if 2FA is enabled)
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [identifier, password]
+              properties:
+                identifier: { type: string, description: Email or username }
+                password: { type: string, format: password }
+                totpCode: { type: string, description: Required only if 2FA is enabled }
+      responses:
+        '200': { description: Login successful - sets an httpOnly refresh-token cookie and returns an access token }
+        '400': { description: TOTP_REQUIRED - account has 2FA enabled, resend with totpCode }
+        '401': { description: Invalid credentials }
+
+  /auth/refresh:
+    post:
+      summary: Exchange the refresh-token cookie for a new access token (rotates the refresh token)
+      security: []
+      responses:
+        '200': { description: New access token issued }
+        '401': { description: Session expired }
+
+  /auth/logout:
+    post:
+      summary: Log out and revoke the current refresh token/session
+      responses:
+        '200': { description: Logged out }
+
+  /auth/forgot-password:
+    post:
+      summary: Request a password reset email
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { email: { type: string, format: email } } }
+      responses:
+        '200': { description: Always returns success to avoid leaking account existence }
+
+  /auth/reset-password:
+    post:
+      summary: Reset password using a reset token
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                token: { type: string }
+                newPassword: { type: string }
+                confirmPassword: { type: string }
+      responses:
+        '200': { description: Password reset }
+
+  /auth/change-password:
+    post:
+      summary: Change password while authenticated
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                currentPassword: { type: string }
+                newPassword: { type: string }
+                confirmPassword: { type: string }
+      responses:
+        '200': { description: Password changed }
+
+  /auth/2fa/setup:
+    post:
+      summary: Begin TOTP 2FA setup; returns a QR code to scan
+      responses:
+        '200': { description: QR code + secret returned }
+
+  /auth/2fa/confirm:
+    post:
+      summary: Confirm and enable 2FA with a code from the authenticator app
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { code: { type: string } } }
+      responses:
+        '200': { description: 2FA enabled }
+
+  /auth/2fa/disable:
+    post:
+      summary: Disable 2FA (requires password confirmation)
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { password: { type: string } } }
+      responses:
+        '200': { description: 2FA disabled }
+
+  /auth/sessions:
+    get:
+      summary: List active sessions for the current user
+      responses:
+        '200': { description: List of sessions }
+
+  /auth/sessions/{sessionId}:
+    delete:
+      summary: Revoke a specific session
+      parameters:
+        - { name: sessionId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Session revoked }
+
+  /auth/me:
+    get:
+      summary: Get the currently authenticated user's profile
+      responses:
+        '200': { description: Current user }
+
+  /files:
+    get:
+      summary: List files (optionally filtered by folder or search term)
+      parameters:
+        - { name: folderId, in: query, schema: { type: string }, description: "'root' for top-level files" }
+        - { name: search, in: query, schema: { type: string } }
+      responses:
+        '200': { description: List of files }
+
+  /files/upload:
+    post:
+      summary: Upload one or more files (multipart/form-data). Files are encrypted server-side before storage.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                files:
+                  type: array
+                  items: { type: string, format: binary }
+                folderId: { type: string }
+      responses:
+        '201': { description: File(s) uploaded and encrypted }
+        '400': { description: Invalid file type, size, or quota exceeded }
+
+  /files/{id}/download:
+    get:
+      summary: Download and decrypt a file (owner only)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Binary file stream, correct Content-Type/Content-Disposition set }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /files/{id}:
+    patch:
+      summary: Rename and/or move a file
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                folderId: { type: string, nullable: true }
+      responses:
+        '200': { description: File updated }
+    delete:
+      summary: Soft-delete a file (moves it to the recycle bin)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: File moved to recycle bin }
+
+  /files/{id}/share:
+    post:
+      summary: Create a share link for a file
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                expiresInHours: { type: integer }
+                maxDownloads: { type: integer }
+                downloadPolicy: { type: string, enum: [ALLOWED, BLOCKED] }
+      responses:
+        '201': { description: Share link created }
+
+  /folders:
+    get:
+      summary: List folders under a parent
+      parameters:
+        - { name: parentId, in: query, schema: { type: string } }
+      responses:
+        '200': { description: List of folders }
+    post:
+      summary: Create a folder
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                parentId: { type: string, nullable: true }
+      responses:
+        '201': { description: Folder created }
+
+  /folders/{id}:
+    patch:
+      summary: Rename a folder
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Folder renamed }
+    delete:
+      summary: Delete a folder
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Folder deleted }
+
+  /shared/{token}:
+    get:
+      summary: (Deprecated path form) - see /share/{token}
+      deprecated: true
+      responses:
+        '200': { description: See /share/{token} }
+
+  /share/{token}:
+    get:
+      summary: Publicly access and download a shared file via its unguessable token (no auth required)
+      security: []
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Binary file stream }
+        '403': { description: Share expired, revoked, or download-blocked }
+        '404': { description: Invalid token or file no longer exists }
+
+  /shares:
+    get:
+      summary: List share links created by the current user
+      responses:
+        '200': { description: List of shares }
+
+  /shares/{shareId}:
+    delete:
+      summary: Revoke a share link
+      parameters:
+        - { name: shareId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Share revoked }
+
+  /recycle-bin:
+    get:
+      summary: List files currently in the recycle bin
+      responses:
+        '200': { description: List of deleted files }
+
+  /recycle-bin/{id}/restore:
+    post:
+      summary: Restore a file from the recycle bin
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: File restored }
+
+  /recycle-bin/{id}:
+    delete:
+      summary: Permanently delete a file from the recycle bin
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: File permanently deleted }
+
+  /activity:
+    get:
+      summary: Get the current user's own recent activity log
+      responses:
+        '200': { description: List of audit log entries for the user }
+
+  /activity/dashboard:
+    get:
+      summary: Dashboard overview (storage usage, recent files/shares)
+      responses:
+        '200': { description: Dashboard summary }
+
+  /admin/users:
+    get:
+      summary: (Admin only) List all users, paginated
+      parameters:
+        - { name: page, in: query, schema: { type: integer } }
+        - { name: pageSize, in: query, schema: { type: integer } }
+      responses:
+        '200': { description: Paginated user list }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/users/{userId}/block:
+    post:
+      summary: (Admin only) Block a user and revoke their sessions
+      parameters:
+        - { name: userId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: User blocked }
+
+  /admin/users/{userId}/unblock:
+    post:
+      summary: (Admin only) Unblock a user
+      parameters:
+        - { name: userId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: User unblocked }
+
+  /admin/users/{userId}:
+    delete:
+      summary: (Admin only) Delete a user
+      parameters:
+        - { name: userId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: User deleted }
+
+  /admin/stats:
+    get:
+      summary: (Admin only) System-wide statistics
+      responses:
+        '200': { description: Stats object }
+
+  /admin/audit-logs:
+    get:
+      summary: (Admin only) Paginated audit log listing
+      parameters:
+        - { name: page, in: query, schema: { type: integer } }
+        - { name: pageSize, in: query, schema: { type: integer } }
+        - { name: action, in: query, schema: { type: string } }
+      responses:
+        '200': { description: Paginated audit logs }
+
+  /admin/security-events:
+    get:
+      summary: (Admin or Moderator) Paginated security-event listing
+      parameters:
+        - { name: page, in: query, schema: { type: integer } }
+        - { name: pageSize, in: query, schema: { type: integer } }
+      responses:
+        '200': { description: Paginated security events }

@@ -1,0 +1,321 @@
+// ==========================================================
+// Secure Cloud File Storage - Prisma Schema (PostgreSQL)
+// ==========================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  USER
+  MODERATOR
+  ADMIN
+}
+
+enum EncryptionAlgorithm {
+  AES_256_GCM
+}
+
+enum ShareDownloadPolicy {
+  ALLOWED
+  BLOCKED
+}
+
+// ------------------------------------------------------------------
+// USERS & AUTH
+// ------------------------------------------------------------------
+
+model User {
+  id                String    @id @default(uuid())
+  firstName         String
+  lastName          String
+  email             String    @unique
+  username          String    @unique
+  passwordHash      String
+  role              Role      @default(USER)
+  isBlocked         Boolean   @default(false)
+  isEmailVerified   Boolean   @default(false)
+
+  totpSecret        String?
+  totpEnabled       Boolean   @default(false)
+
+  // ---- Vault Mode: password-based envelope encryption (opt-in) ----
+  // See backend/src/crypto/vaultCrypto.ts for the derivation scheme.
+  // None of these fields can be used, alone or together, to recover
+  // the vault password or the KEK - only to verify a submitted one.
+  vaultEnabled          Boolean   @default(false)
+  vaultSalt             String?   // base64, Argon2id salt for the vault password
+  vaultVerifierHash     String?   // sha256(HKDF(masterSecret, "vault-verifier-v1"))
+  vaultKeyVersion       Int       @default(0) // bumped every time the vault password is (re)set
+  recoverySalt          String?   // base64, Argon2id salt for the recovery code
+  recoveryVerifierHash  String?   // sha256(HKDF(recoveryMasterSecret, "vault-verifier-v1"))
+
+  storageQuotaBytes BigInt    @default(5368709120) // 5 GB default
+  storageUsedBytes  BigInt    @default(0)
+
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  files                    File[]
+  folders                  Folder[]
+  sessions                 Session[]
+  auditLogs                AuditLog[]
+  securityEvents           SecurityEvent[]
+  fileShares               FileShare[]
+  passwordResetTokens      PasswordResetToken[]
+  emailVerificationTokens  EmailVerificationToken[]
+
+  @@index([email])
+  @@index([username])
+}
+
+model Session {
+  id                String   @id @default(uuid())
+  userId            String
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  refreshTokenHash  String   @unique
+  userAgent         String?
+  ipAddress         String?
+  isRevoked         Boolean  @default(false)
+
+  createdAt         DateTime @default(now())
+  expiresAt         DateTime
+
+  @@index([userId])
+}
+
+model PasswordResetToken {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String   @unique
+  expiresAt  DateTime
+  used       Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+}
+
+model EmailVerificationToken {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String   @unique
+  expiresAt  DateTime
+  used       Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+}
+
+// ------------------------------------------------------------------
+// FOLDERS
+// ------------------------------------------------------------------
+
+model Folder {
+  id         String    @id @default(uuid())
+  ownerId    String
+  owner      User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  name       String
+  parentId   String?
+  parent     Folder?   @relation("FolderChildren", fields: [parentId], references: [id], onDelete: Cascade)
+  children   Folder[]  @relation("FolderChildren")
+
+  isDeleted  Boolean   @default(false)
+  deletedAt  DateTime?
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  files      File[]
+  shares     FileShare[]
+
+  @@index([ownerId])
+  @@index([parentId])
+}
+
+// ------------------------------------------------------------------
+// FILES
+// ------------------------------------------------------------------
+
+model File {
+  id                 String    @id @default(uuid())
+  ownerId            String
+  owner              User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  folderId           String?
+  folder             Folder?   @relation(fields: [folderId], references: [id], onDelete: SetNull)
+
+  originalFilename   String
+  storedObjectKey    String    @unique // key/path in S3 (or local storage)
+  mimeType           String
+  sizeBytes          BigInt
+
+  sha256Hash         String    // hash of ORIGINAL plaintext, computed before encryption
+
+  isEncrypted        Boolean   @default(true)
+  encryptionAlgorithm EncryptionAlgorithm @default(AES_256_GCM)
+
+  // True once this file's AES key is ALSO wrapped under the owner's
+  // vault KEK (see EncryptionMetadata.vaultWrappedAesKey). When true,
+  // downloadFile() requires an active vault-unlock session in
+  // addition to normal auth - see middleware/vaultAuth.ts.
+  vaultProtected     Boolean   @default(false)
+
+  isDeleted          Boolean   @default(false)
+  deletedAt          DateTime?
+  permanentDeleteAt  DateTime?
+
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  encryptionMetadata EncryptionMetadata?
+  versions           FileVersion[]
+  shares             FileShare[]
+
+  @@index([ownerId])
+  @@index([folderId])
+  @@index([isDeleted])
+}
+
+// Stores everything needed to decrypt a file, WITHOUT ever storing
+// the raw (unwrapped) AES key.
+model EncryptionMetadata {
+  id                  String   @id @default(uuid())
+  fileId              String   @unique
+  file                File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  encryptedAesKey     String   // AES key wrapped with RSA-OAEP (base64)
+  iv                  String   // AES-GCM IV/nonce (base64)
+  authTag             String   // AES-GCM authentication tag (base64)
+  rsaKeyId            String   // identifies which RSA keypair wrapped the key (for rotation)
+
+  // ---- Vault Mode: the SAME AES key, ALSO wrapped under the owner's
+  // vault KEK and, separately, under their recovery-code KEK. Both are
+  // optional (nullable) because Vault Mode is opt-in per user/file -
+  // see File.vaultProtected. Neither is set until the user protects
+  // this file (see vaultService.ts).
+  vaultWrappedAesKey    String?  // AES key wrapped under the vault KEK (base64)
+  vaultWrapIv           String?
+  vaultWrapAuthTag      String?
+  vaultKeyVersion       Int?     // which vault password generation wrapped this key
+
+  recoveryWrappedAesKey String?  // AES key wrapped under the recovery-code KEK (base64)
+  recoveryWrapIv        String?
+  recoveryWrapAuthTag   String?
+
+  createdAt           DateTime @default(now())
+}
+
+model FileVersion {
+  id                String   @id @default(uuid())
+  fileId            String
+  file              File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  storedObjectKey   String
+  sizeBytes         BigInt
+  sha256Hash        String
+  encryptedAesKey   String
+  iv                String
+  authTag           String
+
+  createdAt         DateTime @default(now())
+}
+
+// ------------------------------------------------------------------
+// SHARING
+// ------------------------------------------------------------------
+
+model FileShare {
+  id               String              @id @default(uuid())
+
+  // Exactly one of fileId/folderId is set - enforced in shareService.ts,
+  // not at the DB level (Prisma has no portable CHECK constraint here).
+  // A folder share zips and streams every non-vault-protected file
+  // found anywhere under that folder (see shareService.createShare
+  // and accessSharedResource).
+  fileId           String?
+  file             File?               @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  folderId         String?
+  folder           Folder?             @relation(fields: [folderId], references: [id], onDelete: Cascade)
+
+  createdById      String
+  createdBy        User                @relation(fields: [createdById], references: [id], onDelete: Cascade)
+
+  token            String              @unique // random, unguessable
+  downloadPolicy   ShareDownloadPolicy @default(ALLOWED)
+  maxDownloads     Int?
+  downloadCount    Int                 @default(0)
+
+  expiresAt        DateTime?
+  isRevoked        Boolean             @default(false)
+
+  createdAt        DateTime            @default(now())
+
+  @@index([token])
+  @@index([fileId])
+  @@index([folderId])
+}
+
+// ------------------------------------------------------------------
+// RECYCLE BIN (view is effectively File.isDeleted, tracked separately
+// for retention-policy processing)
+// ------------------------------------------------------------------
+
+model RecycleBinEntry {
+  id                String   @id @default(uuid())
+  fileId            String   @unique
+  ownerId           String
+
+  deletedAt         DateTime @default(now())
+  permanentDeleteAt DateTime
+
+  @@index([ownerId])
+  @@index([permanentDeleteAt])
+}
+
+// ------------------------------------------------------------------
+// AUDIT & SECURITY
+// ------------------------------------------------------------------
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  action      String   // e.g. LOGIN_SUCCESS, FILE_UPLOADED, ...
+  status      String   // SUCCESS | FAILURE
+  ipAddress   String?
+  userAgent   String?
+  metadata    Json?
+
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+model SecurityEvent {
+  id          String   @id @default(uuid())
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  eventType   String   // MULTIPLE_FAILED_LOGINS | UNUSUAL_LOCATION | ...
+  severity    String   // LOW | MEDIUM | HIGH
+  description String
+  isResolved  Boolean  @default(false)
+
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+  @@index([eventType])
+}
