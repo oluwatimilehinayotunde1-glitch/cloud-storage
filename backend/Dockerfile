@@ -24,7 +24,7 @@ COPY --from=build /app/prisma ./prisma
 COPY package.json ./
 
 RUN mkdir -p /app/storage /app/keys
-
+RUN apt-get update -y && apt-get install -y openssl
 EXPOSE 4000
 
 # `migrate deploy` only applies migrations that are committed to
