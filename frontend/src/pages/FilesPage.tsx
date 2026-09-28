@@ -195,8 +195,8 @@ export default function FilesPage() {
             {folderId && <><ChevronRight className="h-3 w-3" /><span>Current folder</span></>}
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <div className="relative">
+        <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+          <div className="relative w-full sm:w-auto">
             <Search className="absolute left-3 top-2.5 h-4 w-4 text-gray-400" />
             <input
               placeholder="Search files..."
@@ -222,6 +222,7 @@ export default function FilesPage() {
         onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
         onDragLeave={() => setDragOver(false)}
         onDrop={(e) => { e.preventDefault(); setDragOver(false); handleUpload(e.dataTransfer.files); }}
+        onClick={() => fileInputRef.current?.click()}
         className={`rounded-xl border-2 border-dashed p-6 text-center text-sm transition ${
           dragOver ? 'border-brand-500 bg-brand-50 dark:bg-brand-900/20' : 'border-gray-200 text-gray-400 dark:border-gray-800'
         }`}
@@ -234,7 +235,7 @@ export default function FilesPage() {
       ) : folders.length === 0 && files.length === 0 ? (
         <EmptyState title="This folder is empty" subtitle="Upload a file or create a folder to get started" />
       ) : (
-        <div className="overflow-visible rounded-xl border border-gray-200 dark:border-gray-800">
+       <div className="overflow-x-auto rounded-xl border border-gray-200 dark:border-gray-800">
           <table className="w-full text-sm">
             <thead className="bg-gray-50 text-left text-xs uppercase text-gray-500 dark:bg-gray-900 dark:text-gray-400">
               <tr>
