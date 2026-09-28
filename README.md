@@ -145,7 +145,38 @@ npm run dev                         # http://localhost:4000
 
 By default `STORAGE_DRIVER=local`, so the project runs end-to-end **without any AWS account** — encrypted files are written to `backend/storage/`. Set `STORAGE_DRIVER=s3` and fill in the `AWS_*` variables to use a real S3 bucket.
 
-An RSA-2048 keypair is auto-generated on first run under `backend/keys/` in development. **In production, generate this once and inject it as a mounted secret — do not let the app auto-generate keys in production** (the code enforces this).
+### RSA key setup (required in production)
+
+Generate a production RSA-2048 keypair once:
+
+```bash
+mkdir -p keys
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out keys/rsa_private.pem
+openssl rsa -in keys/rsa_private.pem -pubout -out keys/rsa_public.pem
+```
+
+The backend now resolves keys in this order:
+1. `RSA_PUBLIC_KEY_PATH` / `RSA_PRIVATE_KEY_PATH` if set
+2. `/etc/secrets/rsa_public.pem` / `/etc/secrets/rsa_private.pem` if the secret files exist
+3. `/app/keys/rsa_public.pem` / `/app/keys/rsa_private.pem`
+4. local development defaults under `backend/keys/`
+5. direct `RSA_PUBLIC_KEY` / `RSA_PRIVATE_KEY` PEM env values
+
+The app will fail fast at startup if no keypair is found, and the error includes every path it checked. No key material is ever logged.
+
+### Render / Docker deployment note
+
+Render secret files are mounted at `/etc/secrets/<filename>`, not `/app/keys/<filename>`. Set either:
+
+- `RSA_PUBLIC_KEY_PATH=/etc/secrets/rsa_public.pem`
+- `RSA_PRIVATE_KEY_PATH=/etc/secrets/rsa_private.pem`
+
+or provide the PEM contents directly as:
+
+- `RSA_PUBLIC_KEY=-----BEGIN PUBLIC KEY-----...`
+- `RSA_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----...`
+
+When using PEM env vars, the app converts literal `\n` sequences to real newlines automatically.
 
 ### Frontend
 ```bash
@@ -193,6 +224,10 @@ at all on a given deployment:
 | `VAULT_SESSION_SECRET` | dev fallback (change in prod) | Signs the vault-session cookie (see section 5). Deliberately separate from `JWT_SECRET` so the two credentials can be rotated independently. |
 | `VAULT_SESSION_EXPIRY` | `15m` | How long an unlocked vault stays unlocked before the download button locks again. |
 | `VAULT_UNLOCK_RATE_LIMIT_MAX` | `100` dev / `10` prod | Same rationale as `AUTH_RATE_LIMIT_MAX`, applied to `/vault/unlock` and `/vault/unlock/recovery` since they're an equivalent password-guessing surface. |
+| `RSA_PUBLIC_KEY_PATH` | `rsa_public.pem` | Preferred path to the PEM public key. Render secret files often live under `/etc/secrets/`. |
+| `RSA_PRIVATE_KEY_PATH` | `rsa_private.pem` | Preferred path to the PEM private key. Render secret files often live under `/etc/secrets/`. |
+| `RSA_PUBLIC_KEY` | unset | Optional PEM string fallback. Accepts literal `\n` escapes and converts them to real newlines. |
+| `RSA_PRIVATE_KEY` | unset | Optional PEM string fallback. Accepts literal `\n` escapes and converts them to real newlines. |
 | `AWS_S3_ENDPOINT` | unset (real AWS S3) | Set this to use an S3-*compatible* provider instead of AWS itself - e.g. Cloudflare R2 or Backblaze B2, both free with no time limit, unlike AWS's 12-month trial. The existing `S3StorageAdapter` works unmodified against any of them. |
 | `AWS_S3_FORCE_PATH_STYLE` | `true` if `AWS_S3_ENDPOINT` is set, else `false` | R2/B2 require path-style bucket addressing; real AWS S3 doesn't. |
 

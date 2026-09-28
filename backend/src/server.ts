@@ -3,8 +3,12 @@ import { env } from './config/env';
 import { prisma } from './config/prisma';
 import { logger } from './utils/logger';
 import { startRecycleBinCleanupJob } from './jobs/recycleBinCleanupJob';
+import { ensureKeysLoaded } from './crypto/keyManager';
 
 async function main() {
+  ensureKeysLoaded();
+  logger.info('RSA keypair loaded successfully');
+
   await prisma.$connect();
   logger.info('Connected to PostgreSQL');
 

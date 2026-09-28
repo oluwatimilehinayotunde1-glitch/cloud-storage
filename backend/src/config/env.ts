@@ -62,8 +62,10 @@ export const env = {
 
   // RSA keypair used to protect (wrap) each file's AES key.
   // In production these should come from a KMS/secrets manager, not the filesystem.
-  RSA_PUBLIC_KEY_PATH: process.env.RSA_PUBLIC_KEY_PATH ?? './keys/rsa_public.pem',
-  RSA_PRIVATE_KEY_PATH: process.env.RSA_PRIVATE_KEY_PATH ?? './keys/rsa_private.pem',
+  RSA_PUBLIC_KEY_PATH: process.env.RSA_PUBLIC_KEY_PATH ?? 'rsa_public.pem',
+  RSA_PRIVATE_KEY_PATH: process.env.RSA_PRIVATE_KEY_PATH ?? 'rsa_private.pem',
+  RSA_PUBLIC_KEY: process.env.RSA_PUBLIC_KEY ?? '',
+  RSA_PRIVATE_KEY: process.env.RSA_PRIVATE_KEY ?? '',
   RSA_KEY_ID: process.env.RSA_KEY_ID ?? 'rsa-key-1',
 
   // Storage: "local" (default, for running without AWS) or "s3"
