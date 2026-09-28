@@ -64,7 +64,7 @@ export default function FilesPage() {
       const formData = new FormData();
       Array.from(fileList).forEach((f) => formData.append('files', f));
       if (folderId) formData.append('folderId', folderId);
-      await api.post('/files/upload', formData, { headers: { 'Content-Type': 'multipart/form-data' } });
+      await api.post('/files/upload', formData);
       await load();
     } catch (err) {
       setError(apiErrorMessage(err));

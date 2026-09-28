@@ -6,18 +6,28 @@ import { ApiError } from '../utils/apiError';
 import * as fileService from '../services/fileService';
 
 export async function uploadFiles(req: AuthenticatedRequest, res: Response) {
-  const files = req.files as Express.Multer.File[] | undefined;
-  if (!files || files.length === 0) throw ApiError.badRequest('No files were uploaded');
+  if (!req.user) {
+    throw ApiError.unauthorized('Authentication required');
+  }
 
-  const folderId = (req.body.folderId as string) || null;
+  const files = req.files as Express.Multer.File[] | undefined;
+  if (!files || files.length === 0) {
+    throw ApiError.badRequest('No files were uploaded');
+  }
+
+  const folderId = typeof req.body?.folderId === 'string' && req.body.folderId ? req.body.folderId : null;
 
   const results = [];
   for (const f of files) {
+    if (!f || !f.buffer || !f.originalname) {
+      throw ApiError.badRequest('One or more uploaded files are invalid');
+    }
+
     const created = await fileService.uploadFile({
-      ownerId: req.user!.id,
+      ownerId: req.user.id,
       folderId,
       originalFilename: f.originalname,
-      mimeType: f.mimetype,
+      mimeType: f.mimetype || 'application/octet-stream',
       buffer: f.buffer,
     });
     results.push(created);
