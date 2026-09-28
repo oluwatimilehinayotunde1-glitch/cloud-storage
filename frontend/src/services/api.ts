@@ -61,9 +61,12 @@ api.interceptors.response.use(
       } catch (refreshError) {
         flushQueue(false);
         useAuthStore.getState().clearAuth();
+
         if (window.location.pathname !== '/login') {
-          window.location.href = '/login';
+          window.history.pushState({}, '', '/login');
+          window.dispatchEvent(new PopStateEvent('popstate'));
         }
+
         return Promise.reject(refreshError);
       } finally {
         isRefreshing = false;
